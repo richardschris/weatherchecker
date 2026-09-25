@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weather Verdict</title>
+<style>
+  :root {
+    --bg:#eef1f5; --fg:#16181d; --muted:#5f6673; --card:#fff; --line:#dde1e7; --tile:#f5f7fa;
+    --good:#1a7f37; --shaky:#9a6700; --cold:#0969da; --hot:#c4540a; --bad:#cf222e;
+    --shadow:0 1px 2px rgb(0 0 0 / .05), 0 8px 24px rgb(0 0 0 / .06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0f1115; --fg:#e8eaee; --muted:#9aa1ad; --card:#181b21; --line:#2a2f38; --tile:#20242b;
+      --good:#3fb950; --shaky:#d29922; --cold:#58a6ff; --hot:#f0883e; --bad:#ff6b6b;
+      --shadow:none;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--fg);
+    font:16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:600px; margin:0 auto; padding:32px 16px 48px; }
+  header { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:20px; }
+  h1 { font-size:1rem; font-weight:600; letter-spacing:.02em; margin:0; }
+  #status { font-size:.85rem; color:var(--muted); margin:0; text-align:right; }
+
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px;
+    padding:24px; margin-bottom:16px; box-shadow:var(--shadow); }
+
+  #result { --tone:var(--muted); position:relative; overflow:hidden; border-top:6px solid var(--tone); }
+  #result.good { --tone:var(--good); } #result.shaky { --tone:var(--shaky); }
+  #result.cold, #result.cold-severe { --tone:var(--cold); }
+  #result.hot, #result.hot-severe { --tone:var(--hot); }
+  #result.bad { --tone:var(--bad); }
+  #result::before { content:""; position:absolute; inset:0; pointer-events:none;
+    background:linear-gradient(160deg, color-mix(in srgb, var(--tone) 14%, transparent), transparent 55%); }
+  #result.cold-severe::before, #result.hot-severe::before, #result.bad::before {
+    background:linear-gradient(160deg, color-mix(in srgb, var(--tone) 28%, transparent), transparent 70%); }
+  #result > * { position:relative; }
+
+  .hero { display:flex; align-items:center; gap:16px; }
+  .hero > div { flex:1; min-width:0; }
+  #icon { width:72px; height:72px; border-radius:12px; flex:none; }
+  #place { margin:0; font-size:.9rem; color:var(--muted); }
+  #verdict { margin:2px 0 0; font-size:clamp(2.2rem, 9vw, 3.2rem); font-weight:800; line-height:1.05;
+    letter-spacing:-.02em; color:var(--tone); }
+  #reason { margin:12px 0 0; font-size:1rem; }
+  #forecast { margin:2px 0 0; color:var(--muted); font-size:.95rem; }
+
+  #details { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-top:20px; }
+  @media (max-width:420px) { #details { grid-template-columns:repeat(2, 1fr); } }
+  .tile { background:var(--tile); border-radius:10px; padding:10px 12px; }
+  .tile span { display:block; font-size:.75rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+  .tile b { font-size:1.25rem; font-weight:650; font-variant-numeric:tabular-nums; }
+
+  #alerts:empty { display:none; }
+  #alerts { margin-top:16px; display:flex; flex-direction:column; gap:8px; }
+  .alert { border-left:4px solid var(--bad); background:color-mix(in srgb, var(--bad) 10%, transparent);
+    border-radius:6px; padding:8px 12px; font-size:.9rem; }
+  .alert.minor { border-color:var(--shaky); background:color-mix(in srgb, var(--shaky) 10%, transparent); }
+
+  .loc h2 { font-size:.85rem; font-weight:600; color:var(--muted); margin:0 0 10px; }
+  form { display:flex; gap:8px; flex-wrap:wrap; }
+  input { flex:1 1 120px; min-width:0; padding:10px 12px; font:inherit; color:inherit;
+    background:var(--tile); border:1px solid var(--line); border-radius:8px; }
+  input:focus { outline:2px solid var(--cold); outline-offset:-1px; }
+  button { padding:10px 18px; font:inherit; font-weight:600; color:#fff; background:var(--fg);
+    border:0; border-radius:8px; cursor:pointer; }
+  @media (prefers-color-scheme: dark) { button { color:var(--bg); } }
+  button:hover { opacity:.88; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Weather Verdict</h1>
+    <p id="status">Requesting your location…</p>
+  </header>
+
+  <div id="result" class="card" hidden>
+    <div class="hero">
+      <div>
+        <p id="place"></p>
+        <p id="verdict"></p>
+      </div>
+      <img id="icon" alt="" hidden>
+    </div>
+    <p id="reason"></p>
+    <p id="forecast"></p>
+    <div id="details"></div>
+    <div id="alerts"></div>
+  </div>
+
+  <div class="card loc">
+    <h2>Check another location</h2>
+    <form id="manual">
+      <input id="lat" placeholder="Latitude" inputmode="decimal">
+      <input id="lon" placeholder="Longitude" inputmode="decimal">
+      <button>Check</button>
+    </form>
+  </div>
+</main>
+
+<script>
+const T = {
+  minF: 55,
+  maxF: 90,
+  goodDewF: 60,
+  goodRH: 65,
+  goodPop: 20,
+  coldCalmPop: 30,
+  humidDewF: 70,
+  heatIndexF: 95,
+};
+const STORM_WORDS = /thunderstorm|tornado|hurricane|tropical storm|blizzard/i;
+const PRECIP_WORDS = /snow|sleet|ice|rain|shower|drizzle|freezing|storm|flurr|wintry/i;
+const NON_STORM_ALERTS = /heat|cold|chill|freeze|frost|fire|red flag|air quality|dust|smoke/i;
+
+const API = 'https://api.weather.gov';
+const $ = id => document.getElementById(id);
+
+async function getJSON(url, retries = 1) {
+  const res = await fetch(url, { headers: { Accept: 'application/geo+json' } });
+  if (res.ok) return res.json();
+  if (res.status >= 500 && retries > 0) return getJSON(url, retries - 1);
+  const err = new Error(`${res.status} from ${url}`);
+  err.status = res.status;
+  throw err;
+}
+
+const cToF = c => c * 9 / 5 + 32;
+
+function heatIndex(t, rh) {
+  if (t < 80 || rh == null) return t;
+  return -42.379 + 2.04901523 * t + 10.14333127 * rh - 0.22475541 * t * rh
+    - 0.00683783 * t * t - 0.05481717 * rh * rh + 0.00122874 * t * t * rh
+    + 0.00085282 * t * rh * rh - 0.00000199 * t * t * rh * rh;
+}
+
+function classify(w, stormAlerts) {
+  const { tempF, dewF, rh, pop, hi, text } = w;
+  const dew = dewF ?? -Infinity;
+  const hum = rh ?? 0;
+
+  if (stormAlerts.length) return ['BAD', 'bad', `Active alert: ${stormAlerts.map(a => a.event).join(', ')}`];
+  if (STORM_WORDS.test(text)) return ['BAD', 'bad', `Forecast: ${text}`];
+
+  if (hi >= T.heatIndexF || (tempF > T.maxF && dew > T.humidDewF))
+    return ['Bad (Hot)', 'hot-severe', 'Extreme heat and/or humidity'];
+
+  if (tempF < T.minF) {
+    if (pop > T.coldCalmPop || PRECIP_WORDS.test(text))
+      return ['Bad (Cold)', 'cold-severe', 'Cold with precipitation'];
+    return ['bad (Cold)', 'cold', 'Cold but calm'];
+  }
+
+  if (tempF > T.maxF) return ['bad (Hot)', 'hot', pop > T.coldCalmPop ? 'Hot, some chance of rain' : 'Hot but calm'];
+
+  const issues = [];
+  if (dew > T.goodDewF) issues.push('high dew point');
+  if (hum > T.goodRH) issues.push('high humidity');
+  if (pop > T.goodPop) issues.push('chance of rain');
+  if (issues.length) return ['Shaky', 'shaky', `Comfortable temperature, but ${issues.join(', ')}`];
+  return ['Good', 'good', 'Moderate temperature, dry, low chance of rain'];
+}
+
+async function run(lat, lon) {
+  lat = Number(lat).toFixed(4);
+  lon = Number(lon).toFixed(4);
+  $('status').textContent = `Loading weather for ${lat}, ${lon}…`;
+  $('result').hidden = true;
+
+  let point;
+  try {
+    point = await getJSON(`${API}/points/${lat},${lon}`);
+  } catch (e) {
+    $('status').textContent = e.status === 404
+      ? 'That location is outside National Weather Service coverage (US only).'
+      : `Error: ${e.message}`;
+    return;
+  }
+
+  try {
+    const p = point.properties;
+    const [hourly, alerts] = await Promise.all([
+      getJSON(p.forecastHourly),
+      getJSON(`${API}/alerts/active?point=${lat},${lon}`),
+    ]);
+
+    const now = Date.now();
+    const period = hourly.properties.periods.find(x => new Date(x.endTime) > now)
+      ?? hourly.properties.periods[0];
+
+    const tempF = period.temperatureUnit === 'C' ? cToF(period.temperature) : period.temperature;
+    const dewC = period.dewpoint?.value;
+    const dewF = dewC == null ? null : cToF(dewC);
+    const rh = period.relativeHumidity?.value ?? null;
+    const pop = period.probabilityOfPrecipitation?.value ?? 0;
+    const w = { tempF, dewF, rh, pop, hi: heatIndex(tempF, rh), text: period.shortForecast || '' };
+
+    const allAlerts = alerts.features.map(f => f.properties);
+    const stormAlerts = allAlerts.filter(a =>
+      (a.severity === 'Severe' || a.severity === 'Extreme') && !NON_STORM_ALERTS.test(a.event));
+
+    const [label, cls, reason] = classify(w, stormAlerts);
+
+    const loc = p.relativeLocation?.properties;
+    $('place').textContent = loc ? `${loc.city}, ${loc.state}` : `${lat}, ${lon}`;
+    $('verdict').textContent = label;
+    $('result').className = `card ${cls}`;
+    $('reason').textContent = reason;
+    $('forecast').textContent = w.text;
+    $('icon').hidden = !period.icon;
+    if (period.icon) $('icon').src = period.icon.replace('size=small', 'size=medium');
+
+    const rows = [
+      ['Temp', `${Math.round(tempF)}°F`],
+      ['Feels like', `${Math.round(w.hi)}°F`],
+      ['Dew point', dewF == null ? 'n/a' : `${Math.round(dewF)}°F`],
+      ['Humidity', rh == null ? 'n/a' : `${rh}%`],
+      ['Precip', `${pop}%`],
+      ['Wind', `${period.windSpeed} ${period.windDirection}`],
+    ];
+    $('details').replaceChildren(...rows.map(([k, v]) => {
+      const tile = document.createElement('div');
+      tile.className = 'tile';
+      const name = document.createElement('span'); name.textContent = k;
+      const value = document.createElement('b'); value.textContent = v;
+      tile.append(name, value);
+      return tile;
+    }));
+
+    $('alerts').replaceChildren(...allAlerts.map(a => {
+      const div = document.createElement('div');
+      div.className = stormAlerts.includes(a) ? 'alert' : 'alert minor';
+      div.textContent = `${a.event} (${a.severity})`;
+      return div;
+    }));
+
+    $('status').textContent = `Hourly forecast for ${new Date(period.startTime).toLocaleString()}`;
+    $('result').hidden = false;
+  } catch (e) {
+    $('status').textContent = `Error: ${e.message}`;
+  }
+}
+
+$('manual').addEventListener('submit', e => {
+  e.preventDefault();
+  const lat = parseFloat($('lat').value), lon = parseFloat($('lon').value);
+  if (Number.isFinite(lat) && Number.isFinite(lon)) run(lat, lon);
+  else $('status').textContent = 'Enter a numeric latitude and longitude.';
+});
+
+if ('geolocation' in navigator) {
+  navigator.geolocation.getCurrentPosition(
+    pos => run(pos.coords.latitude, pos.coords.longitude),
+    err => { $('status').textContent = `Location unavailable (${err.message}). Enter coordinates below.`; },
+    { timeout: 10000 },
+  );
+} else {
+  $('status').textContent = 'Geolocation not supported. Enter coordinates below.';
+}
+</script>
+</body>
+</html>

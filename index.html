@@ -41,7 +41,7 @@
 
   .hero { display:flex; align-items:center; gap:16px; }
   .hero > div { flex:1; min-width:0; }
-  #icon { width:72px; height:72px; border-radius:12px; flex:none; }
+  #icon { font-size:56px; line-height:1; flex:none; }
   #place { margin:0; font-size:.9rem; color:var(--muted); }
   #verdict { margin:2px 0 0; font-size:clamp(2.2rem, 9vw, 3.2rem); font-weight:800; line-height:1.05;
     letter-spacing:-.02em; color:var(--tone); }
@@ -71,15 +71,22 @@
   button:hover { opacity:.88; }
   #matches:empty { display:none; }
   #matches { display:flex; flex-direction:column; gap:6px; margin-top:12px; }
-  #matches button { text-align:left; font-weight:400; color:var(--fg); background:var(--tile);
+  #matches button, button.secondary { text-align:left; font-weight:400; color:var(--fg); background:var(--tile);
     border:1px solid var(--line); }
+  #locate { margin-top:8px; width:100%; text-align:center; }
+  .status-row { display:flex; align-items:center; gap:8px; }
+  #share { padding:2px 8px; font-size:.85rem; line-height:1.4; }
+  #share[hidden] { display:none; }
 </style>
 </head>
 <body>
 <main>
   <header>
     <h1>Weather Judgment</h1>
-    <p id="status">Requesting your location…</p>
+    <div class="status-row">
+      <p id="status">Requesting your location…</p>
+      <button id="share" type="button" class="secondary" title="Share current view" aria-label="Share current view" hidden>🔗</button>
+    </div>
   </header>
 
   <div id="result" class="card" hidden>
@@ -88,7 +95,7 @@
         <p id="place"></p>
         <p id="verdict"></p>
       </div>
-      <img id="icon" alt="" hidden>
+      <div id="icon" aria-hidden="true"></div>
     </div>
     <p id="reason"></p>
     <p id="forecast"></p>
@@ -102,6 +109,7 @@
       <input id="query" type="search" placeholder="City, zip code, or lat, lon" autocomplete="off">
       <button>Search</button>
     </form>
+    <button id="locate" type="button" class="secondary">📍 Use current location</button>
     <div id="matches"></div>
   </div>
 </main>
@@ -121,20 +129,62 @@ const STORM_WORDS = /thunderstorm|tornado|hurricane|tropical storm|blizzard/i;
 const PRECIP_WORDS = /snow|sleet|ice|rain|shower|drizzle|freezing|storm|flurr|wintry/i;
 const NON_STORM_ALERTS = /heat|cold|chill|freeze|frost|fire|red flag|air quality|dust|smoke/i;
 
-const API = 'https://api.weather.gov';
+const NWS = 'https://api.weather.gov';
+const FORECAST = 'https://api.open-meteo.com/v1/forecast';
 const GEOCODE = 'https://geocoding-api.open-meteo.com/v1/search';
 const $ = id => document.getElementById(id);
 
-async function getJSON(url, retries = 1) {
-  const res = await fetch(url, { headers: { Accept: 'application/geo+json' } });
+// WMO weather codes used by Open-Meteo
+const WMO = {
+  0: ['Clear', '☀️'], 1: ['Mostly clear', '🌤️'], 2: ['Partly cloudy', '⛅'], 3: ['Overcast', '☁️'],
+  45: ['Fog', '🌫️'], 48: ['Freezing fog', '🌫️'],
+  51: ['Light drizzle', '🌦️'], 53: ['Drizzle', '🌦️'], 55: ['Heavy drizzle', '🌧️'],
+  56: ['Light freezing drizzle', '🌧️'], 57: ['Freezing drizzle', '🌧️'],
+  61: ['Light rain', '🌦️'], 63: ['Rain', '🌧️'], 65: ['Heavy rain', '🌧️'],
+  66: ['Light freezing rain', '🌧️'], 67: ['Freezing rain', '🌧️'],
+  71: ['Light snow', '🌨️'], 73: ['Snow', '🌨️'], 75: ['Heavy snow', '❄️'], 77: ['Snow grains', '🌨️'],
+  80: ['Light rain showers', '🌦️'], 81: ['Rain showers', '🌧️'], 82: ['Violent rain showers', '🌧️'],
+  85: ['Snow showers', '🌨️'], 86: ['Heavy snow showers', '❄️'],
+  95: ['Thunderstorm', '⛈️'], 96: ['Thunderstorm with hail', '⛈️'], 99: ['Thunderstorm with heavy hail', '⛈️'],
+};
+
+async function getJSON(url, headers = {}, retries = 1) {
+  const res = await fetch(url, { headers });
   if (res.ok) return res.json();
-  if (res.status >= 500 && retries > 0) return getJSON(url, retries - 1);
-  const err = new Error(`${res.status} from ${url}`);
+  if (res.status >= 500 && retries > 0) return getJSON(url, headers, retries - 1);
+  const err = new Error(`${res.status} from ${new URL(url).host}`);
   err.status = res.status;
   throw err;
 }
 
-const cToF = c => c * 9 / 5 + 32;
+const nws = url => getJSON(url, { Accept: 'application/geo+json' });
+
+function localTime(unixSeconds, timeZone) {
+  const date = new Date(unixSeconds * 1000);
+  const fmt = timeZoneName => new Intl.DateTimeFormat('en-US', { timeZone, hour: 'numeric', minute: '2-digit', timeZoneName }).format(date);
+  const short = fmt('short');
+  return /GMT|UTC/.test(short) ? fmt('long') : short;
+}
+
+const compass = deg => ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(deg / 45) % 8];
+
+// NWS returns 400/404 outside the US
+async function nwsAlerts(lat, lon) {
+  try {
+    return (await nws(`${NWS}/alerts/active?point=${lat},${lon}`)).features.map(f => f.properties);
+  } catch (e) {
+    return e.status === 400 || e.status === 404 ? [] : null;
+  }
+}
+
+async function nwsPlace(lat, lon) {
+  try {
+    const loc = (await nws(`${NWS}/points/${lat},${lon}`)).properties.relativeLocation.properties;
+    return `${loc.city}, ${loc.state}`;
+  } catch {
+    return null;
+  }
+}
 
 function heatIndex(t, rh) {
   if (t < 80 || rh == null) return t;
@@ -170,54 +220,40 @@ function classify(w, stormAlerts) {
   return ['Good', 'good', 'Moderate temperature, dry, low chance of rain'];
 }
 
-async function run(lat, lon) {
+async function run(lat, lon, placeName, fromDevice = false) {
   lat = Number(lat).toFixed(4);
   lon = Number(lon).toFixed(4);
   $('status').textContent = `Loading weather for ${lat}, ${lon}…`;
   $('result').hidden = true;
-
-  let point;
-  try {
-    point = await getJSON(`${API}/points/${lat},${lon}`);
-  } catch (e) {
-    $('status').textContent = e.status === 404
-      ? 'That location is outside National Weather Service coverage (US only).'
-      : `Error: ${e.message}`;
-    return;
-  }
+  $('share').hidden = true;
 
   try {
-    const p = point.properties;
-    const [hourly, alerts] = await Promise.all([
-      getJSON(p.forecastHourly),
-      getJSON(`${API}/alerts/active?point=${lat},${lon}`),
+    const vars = 'temperature_2m,relative_humidity_2m,dew_point_2m,precipitation_probability,weather_code,wind_speed_10m,wind_direction_10m';
+    const [forecast, allAlerts, place] = await Promise.all([
+      getJSON(`${FORECAST}?latitude=${lat}&longitude=${lon}&current=${vars}&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto&timeformat=unixtime`),
+      nwsAlerts(lat, lon),
+      placeName ?? nwsPlace(lat, lon),
     ]);
 
-    const now = Date.now();
-    const period = hourly.properties.periods.find(x => new Date(x.endTime) > now)
-      ?? hourly.properties.periods[0];
+    const c = forecast.current;
+    const tempF = c.temperature_2m;
+    const dewF = c.dew_point_2m ?? null;
+    const rh = c.relative_humidity_2m ?? null;
+    const pop = c.precipitation_probability ?? 0;
+    const [text, icon] = WMO[c.weather_code] ?? ['Unknown conditions', ''];
+    const w = { tempF, dewF, rh, pop, hi: heatIndex(tempF, rh), text };
 
-    const tempF = period.temperatureUnit === 'C' ? cToF(period.temperature) : period.temperature;
-    const dewC = period.dewpoint?.value;
-    const dewF = dewC == null ? null : cToF(dewC);
-    const rh = period.relativeHumidity?.value ?? null;
-    const pop = period.probabilityOfPrecipitation?.value ?? 0;
-    const w = { tempF, dewF, rh, pop, hi: heatIndex(tempF, rh), text: period.shortForecast || '' };
-
-    const allAlerts = alerts.features.map(f => f.properties);
-    const stormAlerts = allAlerts.filter(a =>
+    const stormAlerts = (allAlerts ?? []).filter(a =>
       (a.severity === 'Severe' || a.severity === 'Extreme') && !NON_STORM_ALERTS.test(a.event));
 
     const [label, cls, reason] = classify(w, stormAlerts);
 
-    const loc = p.relativeLocation?.properties;
-    $('place').textContent = loc ? `${loc.city}, ${loc.state}` : `${lat}, ${lon}`;
-    $('verdict').textContent = label;
+    $('place').textContent = place ?? `${lat}, ${lon}`;
+    $('verdict').textContent = label.replace(/ \((Cold|Hot)\)$/, '');
     $('result').className = `card ${cls}`;
     $('reason').textContent = reason;
-    $('forecast').textContent = w.text;
-    $('icon').hidden = !period.icon;
-    if (period.icon) $('icon').src = period.icon.replace('size=small', 'size=medium');
+    $('forecast').textContent = text;
+    $('icon').textContent = icon;
 
     const rows = [
       ['Temp', `${Math.round(tempF)}°F`],
@@ -225,7 +261,7 @@ async function run(lat, lon) {
       ['Dew point', dewF == null ? 'n/a' : `${Math.round(dewF)}°F`],
       ['Humidity', rh == null ? 'n/a' : `${rh}%`],
       ['Precip', `${pop}%`],
-      ['Wind', `${period.windSpeed} ${period.windDirection}`],
+      ['Wind', `${Math.round(c.wind_speed_10m)} mph ${compass(c.wind_direction_10m)}`],
     ];
     $('details').replaceChildren(...rows.map(([k, v]) => {
       const tile = document.createElement('div');
@@ -236,15 +272,24 @@ async function run(lat, lon) {
       return tile;
     }));
 
-    $('alerts').replaceChildren(...allAlerts.map(a => {
+    $('alerts').replaceChildren(...(allAlerts ?? []).map(a => {
       const div = document.createElement('div');
       div.className = stormAlerts.includes(a) ? 'alert' : 'alert minor';
       div.textContent = `${a.event} (${a.severity})`;
       return div;
     }));
 
-    $('status').textContent = `Hourly forecast for ${new Date(period.startTime).toLocaleString()}`;
+    $('status').textContent = `Current conditions as of ${localTime(c.time, forecast.timezone)}`
+      + (allAlerts === null ? ' · NWS alerts unavailable' : '');
     $('result').hidden = false;
+
+    const params = fromDevice ? null : new URLSearchParams({ lat, lon });
+    if (params && placeName) params.set('name', placeName);
+    history.replaceState(null, '', params ? `?${params}` : location.pathname);
+
+    shareParams = new URLSearchParams({ lat, lon });
+    if (place) shareParams.set('name', place);
+    $('share').hidden = false;
   } catch (e) {
     $('status').textContent = `Error: ${e.message}`;
   }
@@ -258,7 +303,7 @@ async function search(q) {
   $('status').textContent = `Searching for "${q}"…`;
   let results;
   try {
-    const url = `${GEOCODE}?count=5&countryCode=US&language=en&format=json&name=${encodeURIComponent(q)}`;
+    const url = `${GEOCODE}?count=5&language=en&format=json&name=${encodeURIComponent(q)}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`${res.status} from location search`);
     results = (await res.json()).results ?? [];
@@ -268,19 +313,20 @@ async function search(q) {
   }
 
   if (!results.length) {
-    $('status').textContent = `No US locations found for "${q}".`;
+    $('status').textContent = `No locations found for "${q}".`;
     return;
   }
-  if (results.length === 1) return run(results[0].latitude, results[0].longitude);
+  const shortName = r => [r.name, r.admin1, r.country_code === 'US' ? null : r.country].filter(Boolean).join(', ');
+  if (results.length === 1) return run(results[0].latitude, results[0].longitude, shortName(results[0]));
 
   $('status').textContent = 'Multiple matches. Pick one.';
   $('matches').replaceChildren(...results.map(r => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.textContent = [r.name, r.admin2, r.admin1].filter(Boolean).join(', ');
+    b.textContent = [r.name, r.admin2, r.admin1, r.country].filter(Boolean).join(', ');
     b.addEventListener('click', () => {
       $('matches').replaceChildren();
-      run(r.latitude, r.longitude);
+      run(r.latitude, r.longitude, shortName(r));
     });
     return b;
   }));
@@ -292,15 +338,43 @@ $('search').addEventListener('submit', e => {
   if (q) search(q);
 });
 
-if ('geolocation' in navigator) {
+function locate() {
+  if (!('geolocation' in navigator)) {
+    $('status').textContent = 'Geolocation not supported. Search for a location below.';
+    return;
+  }
+  $('matches').replaceChildren();
+  $('status').textContent = 'Requesting your location…';
   navigator.geolocation.getCurrentPosition(
-    pos => run(pos.coords.latitude, pos.coords.longitude),
+    pos => run(pos.coords.latitude, pos.coords.longitude, undefined, true),
     err => { $('status').textContent = `Location unavailable (${err.message}). Search for a location below.`; },
     { timeout: 10000 },
   );
-} else {
-  $('status').textContent = 'Geolocation not supported. Search for a location below.';
 }
+
+$('locate').addEventListener('click', locate);
+
+let shareParams = null;
+$('share').addEventListener('click', async () => {
+  if (!shareParams) return;
+  const url = `${location.origin}${location.pathname}?${shareParams}`;
+  if (navigator.share) {
+    try { await navigator.share({ title: document.title, url }); } catch {}
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    $('share').textContent = '✓';
+    setTimeout(() => { $('share').textContent = '🔗'; }, 2000);
+  } catch {
+    prompt('Copy this link:', url);
+  }
+});
+
+const initial = new URLSearchParams(location.search);
+const initLat = parseFloat(initial.get('lat')), initLon = parseFloat(initial.get('lon'));
+if (Number.isFinite(initLat) && Number.isFinite(initLon)) run(initLat, initLon, initial.get('name') ?? undefined);
+else locate();
 </script>
 </body>
 </html>

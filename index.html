@@ -62,13 +62,17 @@
 
   .loc h2 { font-size:.85rem; font-weight:600; color:var(--muted); margin:0 0 10px; }
   form { display:flex; gap:8px; flex-wrap:wrap; }
-  input { flex:1 1 120px; min-width:0; padding:10px 12px; font:inherit; color:inherit;
+  input { flex:1 1 200px; min-width:0; padding:10px 12px; font:inherit; color:inherit;
     background:var(--tile); border:1px solid var(--line); border-radius:8px; }
   input:focus { outline:2px solid var(--cold); outline-offset:-1px; }
   button { padding:10px 18px; font:inherit; font-weight:600; color:#fff; background:var(--fg);
     border:0; border-radius:8px; cursor:pointer; }
   @media (prefers-color-scheme: dark) { button { color:var(--bg); } }
   button:hover { opacity:.88; }
+  #matches:empty { display:none; }
+  #matches { display:flex; flex-direction:column; gap:6px; margin-top:12px; }
+  #matches button { text-align:left; font-weight:400; color:var(--fg); background:var(--tile);
+    border:1px solid var(--line); }
 </style>
 </head>
 <body>
@@ -93,12 +97,12 @@
   </div>
 
   <div class="card loc">
-    <h2>Check another location</h2>
-    <form id="manual">
-      <input id="lat" placeholder="Latitude" inputmode="decimal">
-      <input id="lon" placeholder="Longitude" inputmode="decimal">
-      <button>Check</button>
+    <h2>Search a location</h2>
+    <form id="search">
+      <input id="query" type="search" placeholder="City, zip code, or lat, lon" autocomplete="off">
+      <button>Search</button>
     </form>
+    <div id="matches"></div>
   </div>
 </main>
 
@@ -118,6 +122,7 @@ const PRECIP_WORDS = /snow|sleet|ice|rain|shower|drizzle|freezing|storm|flurr|wi
 const NON_STORM_ALERTS = /heat|cold|chill|freeze|frost|fire|red flag|air quality|dust|smoke/i;
 
 const API = 'https://api.weather.gov';
+const GEOCODE = 'https://geocoding-api.open-meteo.com/v1/search';
 const $ = id => document.getElementById(id);
 
 async function getJSON(url, retries = 1) {
@@ -245,21 +250,56 @@ async function run(lat, lon) {
   }
 }
 
-$('manual').addEventListener('submit', e => {
+async function search(q) {
+  $('matches').replaceChildren();
+  const coords = q.match(/^\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (coords) return run(coords[1], coords[2]);
+
+  $('status').textContent = `Searching for "${q}"…`;
+  let results;
+  try {
+    const url = `${GEOCODE}?count=5&countryCode=US&language=en&format=json&name=${encodeURIComponent(q)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${res.status} from location search`);
+    results = (await res.json()).results ?? [];
+  } catch (e) {
+    $('status').textContent = `Error: ${e.message}`;
+    return;
+  }
+
+  if (!results.length) {
+    $('status').textContent = `No US locations found for "${q}".`;
+    return;
+  }
+  if (results.length === 1) return run(results[0].latitude, results[0].longitude);
+
+  $('status').textContent = 'Multiple matches. Pick one.';
+  $('matches').replaceChildren(...results.map(r => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = [r.name, r.admin2, r.admin1].filter(Boolean).join(', ');
+    b.addEventListener('click', () => {
+      $('matches').replaceChildren();
+      run(r.latitude, r.longitude);
+    });
+    return b;
+  }));
+}
+
+$('search').addEventListener('submit', e => {
   e.preventDefault();
-  const lat = parseFloat($('lat').value), lon = parseFloat($('lon').value);
-  if (Number.isFinite(lat) && Number.isFinite(lon)) run(lat, lon);
-  else $('status').textContent = 'Enter a numeric latitude and longitude.';
+  const q = $('query').value.trim();
+  if (q) search(q);
 });
 
 if ('geolocation' in navigator) {
   navigator.geolocation.getCurrentPosition(
     pos => run(pos.coords.latitude, pos.coords.longitude),
-    err => { $('status').textContent = `Location unavailable (${err.message}). Enter coordinates below.`; },
+    err => { $('status').textContent = `Location unavailable (${err.message}). Search for a location below.`; },
     { timeout: 10000 },
   );
 } else {
-  $('status').textContent = 'Geolocation not supported. Enter coordinates below.';
+  $('status').textContent = 'Geolocation not supported. Search for a location below.';
 }
 </script>
 </body>
